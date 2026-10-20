@@ -32,7 +32,7 @@ def test_health_and_batch_model_selection(artifact, loan_frame):
     bundle, path = artifact
     raw = loan_frame.iloc[[7, 0, 11]].drop(columns=TARGET)
 
-    with TestClient(create_app(model_path=path)) as client:
+    with TestClient(create_app(model_path=path, database_path=path.with_suffix(".sqlite3"))) as client:
         health = client.get("/health")
         assert health.status_code == 200
         assert set(health.json()["models"]) == set(bundle["pipelines"])
@@ -80,7 +80,7 @@ def test_invalid_requests_return_422(artifact, loan_frame, case):
     else:
         payload["model"] = "unsupported_model"
 
-    with TestClient(create_app(model_path=path)) as client:
+    with TestClient(create_app(model_path=path, database_path=path.with_suffix(".sqlite3"))) as client:
         assert client.post("/predict", json=payload).status_code == 422
 
 
@@ -89,7 +89,7 @@ def test_nonfinite_number_is_rejected(artifact, loan_frame):
     record = loan_frame.iloc[0].drop(labels=TARGET).to_dict()
     record["annual_inc"] = float("nan")
 
-    with TestClient(create_app(model_path=path)) as client:
+    with TestClient(create_app(model_path=path, database_path=path.with_suffix(".sqlite3"))) as client:
         response = client.post(
             "/predict",
             content=json.dumps({"records": [record]}),
@@ -101,7 +101,7 @@ def test_nonfinite_number_is_rejected(artifact, loan_frame):
 def test_missing_model_keeps_health_available_and_rejects_prediction(tmp_path, loan_frame):
     records = loan_frame.iloc[:1].drop(columns=TARGET).to_dict("records")
 
-    with TestClient(create_app(model_path=tmp_path / "missing.joblib")) as client:
+    with TestClient(create_app(model_path=tmp_path / "missing.joblib", database_path=tmp_path / "app.sqlite3")) as client:
         health = client.get("/health")
         assert health.status_code == 503
         assert health.json() == {
