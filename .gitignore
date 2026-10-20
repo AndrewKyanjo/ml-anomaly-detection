@@ -7,3 +7,15 @@ __pycache__/
 data/
 models/
 reports/
+AGENTS.md
+agents.md
+COMMIT_PLAN.md
+commitplan.md
+commit_plan.md
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+.env
+.env.*
+!.env.example

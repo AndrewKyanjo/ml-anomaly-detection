@@ -1,6 +1,8 @@
 """Load saved pipelines once and predict from raw loan records."""
 
 from dataclasses import dataclass
+import hashlib
+from io import BytesIO
 from pathlib import Path
 
 import joblib
@@ -19,6 +21,7 @@ class LoanPredictor:
     pipelines: dict[str, Pipeline]
     default_model: str
     threshold: float
+    model_version: str = ""
 
     def predict(self, records: list[dict], model: str | None = None) -> dict:
         """Return class-1 probabilities and labels without fitting any step."""
@@ -53,7 +56,8 @@ def load_predictor(path: str | Path) -> LoanPredictor:
     if not source.is_file():
         raise FileNotFoundError(f"Model artifact not found: {source}")
     try:
-        bundle = joblib.load(source)
+        artifact_bytes = source.read_bytes()
+        bundle = joblib.load(BytesIO(artifact_bytes))
     except Exception as exc:
         raise ValueError("Could not load the saved model artifact.") from exc
     if not isinstance(bundle, dict):
@@ -80,4 +84,5 @@ def load_predictor(path: str | Path) -> LoanPredictor:
                 raise ValueError("The pipeline must predict classes zero and one.")
         except (AttributeError, TypeError, ValueError) as exc:
             raise ValueError(f"Saved pipeline {name!r} must be a fitted binary classifier.") from exc
-    return LoanPredictor(pipelines, default_model, float(threshold))
+    version = hashlib.sha256(artifact_bytes).hexdigest()
+    return LoanPredictor(pipelines, default_model, float(threshold), version)

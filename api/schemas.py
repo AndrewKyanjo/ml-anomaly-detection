@@ -1,6 +1,6 @@
 """Request and response validation for loan predictions."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -58,6 +58,7 @@ class Prediction(BaseModel):
 
     probability: float = Field(ge=0, le=1)
     label: Literal[0, 1]
+    id: int = Field(ge=1)
 
 
 class PredictResponse(BaseModel):
@@ -66,6 +67,7 @@ class PredictResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     model: str
+    model_version: str
     threshold: float = Field(ge=0, le=1)
     predictions: list[Prediction]
 
@@ -78,3 +80,41 @@ class HealthResponse(BaseModel):
     status: Literal["ok", "unavailable"]
     models: list[str]
     default_model: str | None = None
+
+
+class StoredPredictRequest(BaseModel):
+    """Predict existing database records without resubmitting their features."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    record_ids: list[Annotated[int, Field(ge=1)]] = Field(min_length=1, max_length=1000)
+    model: ModelName | None = None
+
+
+class OutcomeRequest(BaseModel):
+    """An observed outcome supplied after prediction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    observed_label: Literal[0, 1]
+
+
+class RecordPage(BaseModel):
+    total: int
+    items: list[dict]
+
+
+class SavedPrediction(Prediction):
+    record_id: int | None
+    model: str
+    model_version: str
+    threshold: float
+    inputs: dict
+    created_at: str
+    observed_label: Literal[0, 1] | None
+    observed_at: str | None
+
+
+class PredictionPage(BaseModel):
+    total: int
+    items: list[SavedPrediction]

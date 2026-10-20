@@ -1,0 +1,29 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main, staging, development]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.lock.txt
+      - name: Install dependencies
+        run: python -m pip install -c requirements.lock.txt ".[dev]"
+      - name: Run tests without private data or trained artifacts
+        run: python -m pytest -q
+      - name: Check Compose configuration
+        run: docker compose config --quiet
