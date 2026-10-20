@@ -1,0 +1,17 @@
+services:
+  api:
+    build: .
+    image: ${DOCKERHUB_USERNAME:-local}/ml-anomaly-detection:${IMAGE_TAG:-latest}
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      MODEL_PATH: /app/models/loan_models.joblib
+      DATABASE_PATH: /app/data/app.sqlite3
+    volumes:
+      - app-data:/app/data
+      - ./data/raw:/input:ro
+    init: true
+    restart: unless-stopped
+
+volumes:
+  app-data:
