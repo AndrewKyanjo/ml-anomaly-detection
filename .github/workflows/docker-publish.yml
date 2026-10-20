@@ -1,0 +1,91 @@
+name: Publish Docker image
+
+on:
+  workflow_dispatch:
+    inputs:
+      training_run_id:
+        description: Successful training workflow run containing the trained-models artifact
+        required: true
+        type: string
+      image_tag:
+        description: Docker Hub image tag
+        required: true
+        default: "0.1.0"
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate publishing inputs
+        env:
+          RUN_ID: ${{ inputs.training_run_id }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "Invalid training run ID"; exit 1; }
+          [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo "Invalid image tag"; exit 1; }
+          [[ -n "$DOCKERHUB_USERNAME" ]] || { echo "Set the DOCKERHUB_USERNAME secret"; exit 1; }
+      - name: Require successful training on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.training_run_id }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" | python -c '
+          import json, os, sys
+          run = json.load(sys.stdin)
+          assert run["conclusion"] == "success", "Training did not succeed"
+          assert run["head_sha"] == os.environ["GITHUB_SHA"], "Train this commit before publishing"
+          assert run["path"] == ".github/workflows/train.yml", "Select a training workflow run"
+          assert run["head_repository"]["full_name"] == os.environ["GITHUB_REPOSITORY"], "Select a trusted repository run"
+          '
+      - name: Download trained pipelines
+        uses: actions/download-artifact@v5
+        with:
+          name: trained-models
+          path: models
+          run-id: ${{ inputs.training_run_id }}
+          github-token: ${{ github.token }}
+      - name: Check model artifact
+        run: test -s models/loan_models.joblib
+      - uses: docker/setup-buildx-action@v4
+      - name: Sign in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/ml-anomaly-detection:${{ inputs.image_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Check API with the embedded trained models
+        env:
+          IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/ml-anomaly-detection:${{ inputs.image_tag }}
+        run: |
+          docker run -d --name model-api -p 127.0.0.1:8000:8000 -v app-data:/app/data "$IMAGE"
+          for _ in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs model-api
+          exit 1
+      - name: Publish tested image
+        env:
+          IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/ml-anomaly-detection:${{ inputs.image_tag }}
+        run: docker push "$IMAGE"
+      - name: Stop test container
+        if: always()
+        run: docker rm -f model-api || true
