@@ -1,4 +1,12 @@
 # syntax=docker/dockerfile:1
+FROM node:24-slim AS frontend-build
+
+WORKDIR /frontend
+COPY frontend/package*.json ./
+RUN npm ci --include=optional --libc=glibc
+COPY frontend ./
+RUN npm run build
+
 FROM python:3.14-slim AS notebook-source
 
 WORKDIR /source
@@ -23,7 +31,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     MODEL_PATH=/app/models/loan_models.joblib \
-    DATABASE_PATH=/app/data/app.sqlite3
+    DATABASE_PATH=/app/data/app.sqlite3 \
+    FRONTEND_PATH=/app/frontend/dist
 
 WORKDIR /app
 
@@ -43,6 +52,7 @@ COPY api ./api
 RUN python -m pip install --no-deps .
 
 COPY --from=notebook-source /source/notebooks ./notebooks
+COPY --from=frontend-build /frontend/dist ./frontend/dist
 COPY models/loan_models.joblib ./models/loan_models.joblib
 
 USER app
