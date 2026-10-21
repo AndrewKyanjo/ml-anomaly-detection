@@ -2,122 +2,91 @@ name: Publish Docker image
 
 on:
   workflow_dispatch:
-    inputs:
-      training_run_id:
-        description: Optional actual training run ID; leave blank to select successful training for this commit
-        required: false
-        type: string
-      image_tag:
-        description: Docker Hub image tag
-        required: true
-        default: "0.1.0"
-        type: string
 
 permissions:
   contents: read
-  actions: read
+
+defaults:
+  run:
+    shell: powershell
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64, ml-project]
     timeout-minutes: 30
+    env:
+      ML_PROJECT_PATH: ${{ vars.ML_PROJECT_PATH }}
+      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/ml-anomaly-detection
+      CONTAINER_NAME: ml-api-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v6
-      - name: Validate publishing inputs
+      - name: Check local project and Docker Hub configuration
         env:
-          RUN_ID: ${{ inputs.training_run_id }}
-          IMAGE_TAG: ${{ inputs.image_tag }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          [[ -z "$RUN_ID" || "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "Use the numeric ID from the training run URL, or leave it blank"; exit 1; }
-          [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo "Invalid image tag"; exit 1; }
-          [[ -n "$DOCKERHUB_USERNAME" ]] || { echo "Set the DOCKERHUB_USERNAME secret"; exit 1; }
-      - name: Resolve successful training on this commit
-        id: training
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ inputs.training_run_id }}
-        run: |
-          python - <<'PY'
-          import json, os, sys
-          import subprocess
-
-          repository = os.environ["GITHUB_REPOSITORY"]
-          commit = os.environ["GITHUB_SHA"]
-          run_id = os.environ["RUN_ID"].strip()
-
-          def github_api(path):
-              result = subprocess.run(["gh", "api", path], capture_output=True, text=True)
-              if result.returncode:
-                  print(result.stderr, file=sys.stderr)
-                  sys.exit("::error::Cannot access training runs. Use an actual run ID from this repository or leave it blank. Check Actions read access.")
-              return json.loads(result.stdout)
-
-          if not run_id:
-              result = github_api(
-                  f"repos/{repository}/actions/workflows/train.yml/runs"
-                  f"?head_sha={commit}&status=success&event=workflow_dispatch&per_page=1"
-              )
-              runs = result.get("workflow_runs", [])
-              if not runs:
-                  sys.exit("::error::No successful training exists for this commit. Run 'Train and evaluate models' on the selected branch, wait for success, then publish the same commit.")
-              run_id = str(runs[0]["id"])
-
-          run = github_api(f"repos/{repository}/actions/runs/{run_id}")
-          if not (
-              run.get("status") == "completed"
-              and run.get("conclusion") == "success"
-              and run.get("head_sha") == commit
-              and run.get("path") == ".github/workflows/train.yml"
-              and run.get("event") == "workflow_dispatch"
-              and (run.get("head_repository") or {}).get("full_name") == repository
-          ):
-              sys.exit("::error::Select successful 'Train and evaluate models' training from this repository at the exact commit being published.")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"run_id={run_id}\n")
-          print(f"Using training run: https://github.com/{repository}/actions/runs/{run_id}")
-          PY
-      - name: Download trained pipelines
-        uses: actions/download-artifact@v5
+          if (-not $env:ML_PROJECT_PATH) { throw "Set the ML_PROJECT_PATH repository variable to your local project folder." }
+          $projectRoot = [IO.Path]::GetFullPath($env:ML_PROJECT_PATH).TrimEnd('\', '/')
+          $workspaceRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd('\', '/')
+          $comparison = [StringComparison]::OrdinalIgnoreCase
+          if ($projectRoot.Equals($workspaceRoot, $comparison) -or
+              $projectRoot.StartsWith("$workspaceRoot\", $comparison) -or
+              $workspaceRoot.StartsWith("$projectRoot\", $comparison)) {
+            throw "Install the runner outside the local project so checkout cannot remove your data."
+          }
+          if (-not $env:DOCKERHUB_USERNAME) { throw "Set the DOCKERHUB_USERNAME repository secret." }
+          if (-not $env:DOCKERHUB_TOKEN) { throw "Set the DOCKERHUB_TOKEN repository secret." }
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
-          name: trained-models
-          path: models
-          run-id: ${{ steps.training.outputs.run_id }}
-          github-token: ${{ github.token }}
-      - name: Check model artifact
-        run: test -s models/loan_models.joblib
-      - uses: docker/setup-buildx-action@v4
+          python-version: "3.14"
+      - name: Copy the local trained model
+        run: |
+          @'
+          import os
+          from pathlib import Path
+          import shutil
+
+          configured = os.environ.get("ML_PROJECT_PATH", "").strip()
+          if not configured:
+              raise SystemExit("Set ML_PROJECT_PATH to the local project folder.")
+          source = Path(configured).expanduser().resolve() / "models/loan_models.joblib"
+          if not source.is_file():
+              raise SystemExit("Local model not found. Run 'Train and evaluate models' first.")
+          destination = Path("models/loan_models.joblib").resolve()
+          if source.resolve() != destination:
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(source, destination)
+          '@ | python -
       - name: Sign in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Build image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64
-          load: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/ml-anomaly-detection:${{ inputs.image_tag }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Check API with the embedded trained models
-        env:
-          IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/ml-anomaly-detection:${{ inputs.image_tag }}
         run: |
-          docker run -d --name model-api -p 127.0.0.1:8000:8000 -v app-data:/app/data "$IMAGE"
-          for _ in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:8000/health; then
-              exit 0
-            fi
-            sleep 2
-          done
-          docker logs model-api
+          docker build --tag "$($env:IMAGE):sha-$env:GITHUB_SHA" --tag "$($env:IMAGE):latest" .
+      - name: Check API with the embedded trained models
+        run: |
+          docker run --detach --name $env:CONTAINER_NAME --volume /app/data "$($env:IMAGE):sha-$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          for ($attempt = 0; $attempt -lt 30; $attempt++) {
+            $status = docker inspect --format '{{.State.Health.Status}}' $env:CONTAINER_NAME
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if ($status -eq "healthy") { exit 0 }
+            if ($status -eq "unhealthy") { break }
+            Start-Sleep -Seconds 2
+          }
+          docker logs $env:CONTAINER_NAME
           exit 1
       - name: Publish tested image
-        env:
-          IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/ml-anomaly-detection:${{ inputs.image_tag }}
-        run: docker push "$IMAGE"
-      - name: Stop test container
+        run: |
+          docker push "$($env:IMAGE):sha-$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          docker push "$($env:IMAGE):latest"
+      - name: Stop test container and remove its temporary volume
         if: always()
-        run: docker rm -f model-api || true
+        run: |
+          $ErrorActionPreference = 'Continue'
+          docker container inspect $env:CONTAINER_NAME *> $null
+          if ($LASTEXITCODE -eq 0) { docker rm --force --volumes $env:CONTAINER_NAME }
+          exit 0
