@@ -27,3 +27,10 @@ models/*
 **/*-journal
 *.log
 tests
+**/node_modules
+frontend/dist
+frontend/.vite
+frontend/test-results
+frontend/playwright-report
+html
+stitch_loan_classification_dashboard
