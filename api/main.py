@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi import Path as PathParameter
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.inference import load_predictor
@@ -22,11 +23,13 @@ from .schemas import (
     HealthResponse, OutcomeRequest, PredictRequest, PredictResponse,
     PredictionPage, RecordPage, SavedPrediction, StoredPredictRequest,
 )
+from .frontend import serve_frontend
 
 
 def create_app(
     model_path: str | Path | None = None,
     database_path: str | Path | None = None,
+    frontend_path: str | Path | None = None,
 ) -> FastAPI:
     """Load one local artifact at startup; routes only validate and delegate."""
     default_path = Path(__file__).resolve().parents[1] / "models/loan_models.joblib"
@@ -54,6 +57,22 @@ def create_app(
         app.state.predictor = None
 
     app = FastAPI(title="Loan Prediction API", version="0.1.0", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            origin.strip() for origin in os.getenv(
+                "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+            ).split(",") if origin.strip()
+        ],
+        allow_methods=["GET", "POST", "PATCH"],
+        allow_headers=["Content-Type"],
+    )
+    serve_frontend(
+        app,
+        Path(frontend_path or os.getenv(
+            "FRONTEND_PATH", str(default_path.parent.parent / "frontend/dist")
+        )),
+    )
 
     def require_database():
         if not getattr(app.state, "database_ready", False):
