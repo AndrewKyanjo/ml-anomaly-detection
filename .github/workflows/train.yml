@@ -2,20 +2,34 @@ name: Train and evaluate models
 
 on:
   workflow_dispatch:
-    inputs:
-      csv_url:
-        description: HTTPS URL of the training CSV accessible to this runner
-        required: true
-        type: string
 
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: powershell
+
 jobs:
   train:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64, ml-project]
     timeout-minutes: 60
+    env:
+      ML_PROJECT_PATH: ${{ vars.ML_PROJECT_PATH }}
+      OMP_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
     steps:
+      - name: Check local project configuration
+        run: |
+          if (-not $env:ML_PROJECT_PATH) { throw "Set the ML_PROJECT_PATH repository variable to your local project folder." }
+          $projectRoot = [IO.Path]::GetFullPath($env:ML_PROJECT_PATH).TrimEnd('\', '/')
+          $workspaceRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd('\', '/')
+          $comparison = [StringComparison]::OrdinalIgnoreCase
+          if ($projectRoot.Equals($workspaceRoot, $comparison) -or
+              $projectRoot.StartsWith("$workspaceRoot\", $comparison) -or
+              $workspaceRoot.StartsWith("$projectRoot\", $comparison)) {
+            throw "Install the runner outside the local project so checkout cannot remove your data."
+          }
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
@@ -24,32 +38,53 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             requirements.lock.txt
-      - name: Install training dependencies
-        run: python -m pip install -c requirements.lock.txt .
-      - name: Download training CSV
-        env:
-          CSV_URL: ${{ inputs.csv_url }}
+      - name: Copy local training data and saved splits
         run: |
-          python - <<'PY'
+          @'
           import os
-          import shutil
-          import urllib.parse
-          import urllib.request
           from pathlib import Path
+          import shutil
 
-          url = os.environ["CSV_URL"]
-          if urllib.parse.urlsplit(url).scheme != "https":
-              raise ValueError("Use an HTTPS CSV URL.")
-          destination = Path("data/raw/data.csv")
-          destination.parent.mkdir(parents=True, exist_ok=True)
-          with urllib.request.urlopen(url, timeout=60) as source:
-              if urllib.parse.urlsplit(source.url).scheme != "https":
-                  raise ValueError("CSV redirects must remain on HTTPS.")
-              with destination.open("wb") as output:
-                  shutil.copyfileobj(source, output)
-          PY
+          configured = os.environ.get("ML_PROJECT_PATH", "").strip()
+          if not configured:
+              raise SystemExit("Set ML_PROJECT_PATH to the local project folder.")
+          project = Path(configured).expanduser().resolve()
+          if not (project / "data/raw/data.csv").is_file():
+              raise SystemExit("Local data/raw/data.csv was not found. Check ML_PROJECT_PATH.")
+          for name in ("data/raw/data.csv", "data/processed/split.parquet", "data/processed/validation_split.parquet"):
+              source = project / name
+              destination = Path(name).resolve()
+              if source.is_file() and source.resolve() != destination:
+                  destination.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(source, destination)
+          '@ | python -
+      - name: Install training dependencies
+        run: |
+          python -m venv .venv
+          ./.venv/Scripts/python.exe -m pip install -c requirements.lock.txt .
       - name: Select on validation and evaluate reserved test data
-        run: python -m src.manage train data/raw/data.csv
+        run: ./.venv/Scripts/python.exe -m src.manage train data/raw/data.csv
+      - name: Save trained outputs to the local project
+        run: |
+          @'
+          import os
+          from pathlib import Path
+          import shutil
+
+          project = Path(os.environ["ML_PROJECT_PATH"]).expanduser().resolve()
+          for name in (
+              "models/loan_models.joblib", "data/processed/split.parquet",
+              "data/processed/validation_split.parquet",
+              "reports/validation_metrics.csv", "reports/test_model_comparison.csv",
+          ):
+              source = Path(name).resolve()
+              destination = project / name
+              if source != destination:
+                  destination.parent.mkdir(parents=True, exist_ok=True)
+                  temporary = destination.with_name(destination.name + ".tmp")
+                  shutil.copy2(source, temporary)
+                  temporary.replace(destination)
+          '@ | python -
       - name: Save trusted trained pipelines
         uses: actions/upload-artifact@v4
         with:
