@@ -191,9 +191,17 @@ docker push your-dockerhub-username/ml-anomaly-detection:0.1.0
 
 GitHub Actions runs tests automatically and provides manual training and
 publishing. Set repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
-Train with an accessible HTTPS CSV URL, then pass the successful training run
-ID and image tag to publishing at the same commit. Publishing checks API health
-before pushing. The workflows must be pushed to GitHub before use.
+
+1. Push the updated source and workflows to GitHub.
+2. Run **Train and evaluate models** on the target branch with an accessible
+   HTTPS `csv_url`. Wait for success and review its metrics.
+3. Run **Publish Docker image** on the same branch and commit. Leave
+   `training_run_id` blank and provide an `image_tag`.
+
+Publishing selects the latest successful manual training run for that exact
+commit. To select a run explicitly, copy its ID from the actual training run
+URL; do not use an example ID or the displayed run number. If the branch changes,
+train again before publishing. Publishing checks API health before pushing.
 
 See [workflows](docs/WORKFLOWS.md) for the operational sequence and future options.
 
