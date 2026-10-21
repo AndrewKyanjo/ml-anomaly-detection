@@ -1,7 +1,8 @@
 # Loan classification
 
 Compare random forest, logistic regression, and XGBoost pipelines, serve them
-with FastAPI, and store source records and prediction outcomes in SQLite.
+with FastAPI and a React dashboard, and store source records and prediction
+outcomes in SQLite.
 
 ## Setup
 
@@ -79,9 +80,10 @@ In notebook 06, `None` uses the saved choice. All candidates are saved in
 ## Docker
 
 Create `models/loan_models.joblib` before building. The image includes the
-trained pipelines, source, and notebooks with outputs removed. CSV and SQLite
-files stay outside the image. The image runs the API and source commands;
-execute notebooks in the local development environment.
+compiled React dashboard, trained pipelines, source, and notebooks with outputs
+removed. A Node 24 build stage compiles the frontend; the final Python image
+serves the dashboard and API on one port. CSV and SQLite files stay outside the
+image. Execute notebooks in the local development environment.
 
 ```powershell
 docker compose build
@@ -92,7 +94,8 @@ docker compose run --rm api python -m src.manage import-csv /input/data.csv
 Compose mounts `./data/raw` read-only at `/input` and the named `app-data` volume
 at `/app/data`. SQLite uses `/app/data/app.sqlite3`. Identical CSV contents are
 imported once, identified by SHA-256. The API runs as a non-root user with one
-worker. Open `http://127.0.0.1:8000/docs`.
+worker. Open `http://127.0.0.1:8000/` for the dashboard or
+`http://127.0.0.1:8000/docs` for the API reference.
 
 `docker compose down` preserves the database volume. Inspect startup with
 `docker compose logs api`. The health check requires both models and storage.
@@ -107,6 +110,55 @@ worker. Open `http://127.0.0.1:8000/docs`.
 The local database defaults to `data/app.sqlite3`; override it with
 `DATABASE_PATH`. `MODEL_PATH` selects another trusted local bundle. Restart after
 replacing it. Startup creates database tables; import and training are explicit.
+
+## React dashboard
+
+Use Node.js 24. Start the API with the command above, then run these commands
+in another terminal:
+
+```powershell
+cd frontend
+npm ci
+npm run dev -- --host 127.0.0.1 --port 5173 --strictPort
+```
+
+Open `http://127.0.0.1:5173`. Development requests target
+`http://127.0.0.1:8000`; production requests use the dashboard's origin. Override
+the API address with `VITE_API_BASE_URL` when building for another deployment.
+FastAPI permits the local Vite origins on port 5173. `CORS_ORIGINS` replaces that
+allowlist with comma-separated origins when needed.
+
+The dashboard provides loaded-model health, paginated records and record details,
+a 15-field prediction form, batch predictions from stored IDs, and prediction
+history with independently observed outcomes. Prediction probabilities refer to
+class 1; the dataset does not establish a business meaning for either class.
+
+| Browser route | Page |
+| --- | --- |
+| `/` | Dashboard and model health. |
+| `/app/records` | Records explorer and details. |
+| `/app/predict` | Raw prediction form. |
+| `/app/batch` | Stored-record batch prediction. |
+| `/app/history` | Prediction history and outcome feedback. |
+
+Browser routes support direct navigation and refresh. API routes such as
+`GET /records` retain their JSON responses. UI components live in
+`frontend/src/components`, HTTP calls in `frontend/src/services/api.ts`, and
+contracts in `frontend/src/types`.
+
+To check or build the dashboard locally:
+
+```powershell
+cd frontend
+npm run lint
+npm run build
+```
+
+After building, restart FastAPI and open `http://127.0.0.1:8000/`. It serves
+`frontend/dist` by default; `FRONTEND_PATH` selects another compiled directory.
+Without a local frontend build, `/` redirects to `/docs`.
+
+## API endpoints
 
 | Method and path | Behavior |
 | --- | --- |
@@ -189,19 +241,43 @@ docker tag local/ml-anomaly-detection:latest your-dockerhub-username/ml-anomaly-
 docker push your-dockerhub-username/ml-anomaly-detection:0.1.0
 ```
 
-GitHub Actions runs tests automatically and provides manual training and
-publishing. Set repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
+GitHub Actions runs Python tests and frontend lint/build checks on hosted runners.
+Training and publishing use a
+Windows self-hosted runner on the computer containing your local CSV and models.
+Set it up once:
 
-1. Push the updated source and workflows to GitHub.
-2. Run **Train and evaluate models** on the target branch with an accessible
-   HTTPS `csv_url`. Wait for success and review its metrics.
-3. Run **Publish Docker image** on the same branch and commit. Leave
-   `training_run_id` blank and provide an `image_tag`.
+1. Open **Settings -> Actions -> Runners -> New self-hosted runner**, select
+   **Windows / x64**, and follow GitHub's install and registration commands.
+2. Install it outside this project, for example `C:/actions-runner`, and add the
+   custom label `ml-project` during registration.
+3. Install Python 3.14. Run the runner under the same Windows account as Docker
+   Desktop, keep it online, and use Linux container mode.
+4. Under **Settings -> Secrets and variables -> Actions -> Variables**, set
+   `ML_PROJECT_PATH` to the absolute project directory, such as
+   `C:/projects/ml-project`. This directory must contain
+   `data/raw/data.csv` for training and `models/loan_models.joblib` for publishing.
 
-Publishing selects the latest successful manual training run for that exact
-commit. To select a run explicitly, copy its ID from the actual training run
-URL; do not use an example ID or the displayed run number. If the branch changes,
-train again before publishing. Publishing checks API health before pushing.
+Under the same settings page, add these repository secrets:
+
+| Secret | Value |
+| --- | --- |
+| `DOCKERHUB_USERNAME` | Your Docker Hub username. |
+| `DOCKERHUB_TOKEN` | A Docker Hub token with permission to push images. |
+
+Push the updated workflows, then open **Actions -> Publish Docker image -> Run
+workflow** and select the branch. No dispatch fields are required. Publishing
+copies the existing local fitted model bundle into a clean checkout, builds the
+image including the dashboard, verifies model loading and API health, and pushes
+`<username>/ml-anomaly-detection:sha-<commit>` and `:latest`.
+
+To retrain, run **Train and evaluate models**. It reads the local CSV and writes
+the updated fitted bundle back to `ML_PROJECT_PATH`; review the
+`training-metrics` artifact before publishing. This workflow also requires no
+dispatch fields. CSV and SQLite files remain ignored and outside the image.
+
+Neither workflow needs a dataset URL. These manual workflows execute trusted
+repository code on your computer; restrict dispatch access to trusted
+maintainers. Pull-request tests continue to use hosted runners.
 
 See [workflows](docs/WORKFLOWS.md) for the operational sequence and future options.
 
