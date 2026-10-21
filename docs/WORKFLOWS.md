@@ -71,12 +71,12 @@ Review both reports before accepting a bundle for serving.
 
 For GitHub Actions:
 
-1. Push the source and workflow revision.
+1. Push the updated source and workflows to GitHub.
 2. Open **Actions -> Train and evaluate models -> Run workflow**.
 3. Select the branch and provide `csv_url`, an HTTPS URL accessible to the runner.
    Dispatch inputs appear in workflow history; choose the data-access mechanism
    accordingly.
-4. Review the `training-metrics` artifact and retain the successful run ID.
+4. Wait for success and review the `training-metrics` artifact.
    `trained-models` contains `loan_models.joblib`. Artifacts last seven days.
 
 Local CLI runs reuse saved split files. A fresh GitHub runner creates its splits
@@ -101,9 +101,17 @@ For GitHub publishing:
 
 1. Set repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` with write
    access to the intended Docker Hub repository.
-2. Complete and review training for the exact commit to publish.
-3. Open **Actions -> Publish Docker image -> Run workflow** on that commit.
-4. Supply `training_run_id` and a release tag such as `0.1.0`.
+2. Push the updated workflows, then complete and review training on the branch
+   and exact commit to publish.
+3. Open **Actions -> Publish Docker image -> Run workflow** and select that same
+   branch without adding commits after training.
+4. Leave `training_run_id` blank and supply an `image_tag`, such as `0.1.0`.
+
+An empty `training_run_id` selects the latest successful manual `train.yml` run
+in this repository for the selected commit. To choose a run explicitly, open
+the successful training run and copy the ID after `/actions/runs/` in its URL.
+Use the actual run ID, not a displayed run number, job ID, or example value.
+If the branch advances, rerun training for the new commit before publishing.
 
 Publishing verifies the selected training run succeeded in this repository at
 the same commit. It downloads the artifact, builds a Linux AMD64 image, and

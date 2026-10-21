@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       training_run_id:
-        description: Successful training workflow run containing the trained-models artifact
-        required: true
+        description: Optional actual training run ID; leave blank to select successful training for this commit
+        required: false
         type: string
       image_tag:
         description: Docker Hub image tag
@@ -29,28 +29,60 @@ jobs:
           IMAGE_TAG: ${{ inputs.image_tag }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
-          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "Invalid training run ID"; exit 1; }
+          [[ -z "$RUN_ID" || "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "Use the numeric ID from the training run URL, or leave it blank"; exit 1; }
           [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo "Invalid image tag"; exit 1; }
           [[ -n "$DOCKERHUB_USERNAME" ]] || { echo "Set the DOCKERHUB_USERNAME secret"; exit 1; }
-      - name: Require successful training on this commit
+      - name: Resolve successful training on this commit
+        id: training
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ inputs.training_run_id }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" | python -c '
+          python - <<'PY'
           import json, os, sys
-          run = json.load(sys.stdin)
-          assert run["conclusion"] == "success", "Training did not succeed"
-          assert run["head_sha"] == os.environ["GITHUB_SHA"], "Train this commit before publishing"
-          assert run["path"] == ".github/workflows/train.yml", "Select a training workflow run"
-          assert run["head_repository"]["full_name"] == os.environ["GITHUB_REPOSITORY"], "Select a trusted repository run"
-          '
+          import subprocess
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          commit = os.environ["GITHUB_SHA"]
+          run_id = os.environ["RUN_ID"].strip()
+
+          def github_api(path):
+              result = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+              if result.returncode:
+                  print(result.stderr, file=sys.stderr)
+                  sys.exit("::error::Cannot access training runs. Use an actual run ID from this repository or leave it blank. Check Actions read access.")
+              return json.loads(result.stdout)
+
+          if not run_id:
+              result = github_api(
+                  f"repos/{repository}/actions/workflows/train.yml/runs"
+                  f"?head_sha={commit}&status=success&event=workflow_dispatch&per_page=1"
+              )
+              runs = result.get("workflow_runs", [])
+              if not runs:
+                  sys.exit("::error::No successful training exists for this commit. Run 'Train and evaluate models' on the selected branch, wait for success, then publish the same commit.")
+              run_id = str(runs[0]["id"])
+
+          run = github_api(f"repos/{repository}/actions/runs/{run_id}")
+          if not (
+              run.get("status") == "completed"
+              and run.get("conclusion") == "success"
+              and run.get("head_sha") == commit
+              and run.get("path") == ".github/workflows/train.yml"
+              and run.get("event") == "workflow_dispatch"
+              and (run.get("head_repository") or {}).get("full_name") == repository
+          ):
+              sys.exit("::error::Select successful 'Train and evaluate models' training from this repository at the exact commit being published.")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"run_id={run_id}\n")
+          print(f"Using training run: https://github.com/{repository}/actions/runs/{run_id}")
+          PY
       - name: Download trained pipelines
         uses: actions/download-artifact@v5
         with:
           name: trained-models
           path: models
-          run-id: ${{ inputs.training_run_id }}
+          run-id: ${{ steps.training.outputs.run_id }}
           github-token: ${{ github.token }}
       - name: Check model artifact
         run: test -s models/loan_models.joblib
